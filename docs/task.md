@@ -1,0 +1,26 @@
+- [x] Initialize project environment
+  - [x] Create `requirements.txt`
+  - [x] Create `.env` and `.env.example`
+- [x] Implement Ingestor Component (Subagent A-1 tasks)
+  - [x] Create `app/services/ingestor.py`
+  - [x] Handle image downloads and processing with Pillow
+- [x] Implement AI & Vector Indexing Component (Subagent A-2 tasks)
+  - [x] Create `app/services/vectorizer.py`
+  - [x] Integrate CLIP embedding generation (transformers/mock)
+  - [x] Integrate Pinecone indexing
+- [x] Assemble FastAPI application
+  - [x] Create `app/config.py` and `app/schemas.py`
+  - [x] Create `app/api/endpoints.py`
+  - [x] Create `app/main.py`
+- [x] Write and execute test suite (Phase 1)
+  - [x] Create `tests/test_ingestor.py`
+  - [x] Create `tests/test_vectorizer.py`
+  - [x] Create `tests/test_api.py`
+  - [x] Run pytest to verify all tests pass
+
+- [ ] Implement Phase 2 - Visual Search & Querying
+  - [ ] Create `app/services/cache.py` for LRU query caching
+  - [ ] Add search query and response Pydantic schemas in `app/schemas.py`
+  - [ ] Update `query_similar_products` in `app/services/vectorizer.py` with caching, thresholding, and metadata filters
+  - [ ] Implement search endpoints in `app/api/endpoints.py` (`POST /search/file` and `POST /search/url`)
+  - [ ] Create `tests/test_search.py` and run pytest suite to verify Phase 1 and 2 pass

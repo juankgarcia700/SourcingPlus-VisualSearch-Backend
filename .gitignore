@@ -1,0 +1,21 @@
+# Python caching
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+venv/
+ENV/
+env/
+
+# Pytest & testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db

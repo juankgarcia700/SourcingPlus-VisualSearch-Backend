@@ -30,6 +30,11 @@ class SearchURLPayload(BaseModel):
     score_threshold: float = Field(default=0.0, ge=0.0, le=1.0, description="Minimum cosine similarity score filter")
     in_stock_only: bool = Field(default=False, description="If true, only return products with inventory > 0")
     category: Optional[str] = Field(default=None, description="Filter results by category name")
+    text_query: Optional[str] = Field(default=None, description="Natural language description tag to blend with query image")
+    image_weight: float = Field(default=0.7, ge=0.0, le=1.0, description="A weighting factor (0.0 to 1.0) favoring visual similarity over text query")
+    min_price: Optional[float] = Field(default=None, ge=0.0, description="Lower price range bound filter")
+    max_price: Optional[float] = Field(default=None, ge=0.0, description="Upper price range bound filter")
+    brand: Optional[str] = Field(default=None, description="Filter results by brand name")
 
 class SearchResponseItem(BaseModel):
     id: str = Field(..., description="Product identifier")

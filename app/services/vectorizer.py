@@ -498,6 +498,41 @@ def upsert_products_to_pinecone(
     }
 
 
+def generate_text_embedding(text: str) -> List[float]:
+    """
+    Generates a 512-dimensional text embedding using the CLIP text encoder.
+    Falls back to a deterministic mock text vector if running in mock mode or if CLIP is unavailable.
+    """
+    if settings.use_mock_embeddings or not clip_available:
+        # Deterministic mock text embedding based on hash of text
+        hasher = hashlib.sha256(text.encode('utf-8'))
+        seed = int(hasher.hexdigest(), 16) % (2**32)
+        rng = np.random.default_rng(seed)
+        vector = rng.normal(size=512)
+        norm = np.linalg.norm(vector)
+        if norm > 0:
+            vector = vector / norm
+        return vector.tolist()
+        
+    try:
+        inputs = processor(text=[text], return_tensors="pt").to(device)
+        with torch.no_grad():
+            text_features = model.get_text_features(**inputs)
+        # L2 normalization
+        text_features = text_features / text_features.norm(p=2, dim=-1, keepdim=True)
+        return text_features.cpu().numpy()[0].tolist()
+    except Exception as e:
+        logger.warning(f"CLIP text embedding generation failed: {e}. Falling back to mock text embedding.")
+        hasher = hashlib.sha256(text.encode('utf-8'))
+        seed = int(hasher.hexdigest(), 16) % (2**32)
+        rng = np.random.default_rng(seed)
+        vector = rng.normal(size=512)
+        norm = np.linalg.norm(vector)
+        if norm > 0:
+            vector = vector / norm
+        return vector.tolist()
+
+
 def query_similar_products(
     image: Any, 
     top_k: int = 10, 
@@ -505,47 +540,99 @@ def query_similar_products(
     in_stock_only: bool = False,
     category: Optional[str] = None,
     cache_url: Optional[str] = None,
-    cache_bytes: Optional[bytes] = None
+    cache_bytes: Optional[bytes] = None,
+    text_query: Optional[str] = None,
+    image_weight: float = 0.7,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    brand: Optional[str] = None
 ) -> tuple[List[Dict[str, Any]], bool]:
     """
-    Query the Pinecone index using the visual embedding generated from the query image.
-    Supports score thresholding, inventory availability filters, category filtering,
-    and local embedding cache lookup.
+    Query the Pinecone index using a query embedding generated from the image (and optional blended text description).
+    Supports numeric range filtering (min/max price), brand, category, stock availability,
+    and LRU query embedding cache lookups.
     """
     from app.services.cache import query_cache
     
     embedding = None
     cache_hit = False
     
-    # 1. Attempt cache lookup
-    if cache_url:
-        embedding = query_cache.get_by_url(cache_url)
+    # 1. Modify cache keys to incorporate text query so caches don't clash on different tags
+    cache_url_key = cache_url
+    if cache_url and text_query:
+        cache_url_key = f"{cache_url}?text_query={text_query}"
+        
+    cache_bytes_key = cache_bytes
+    if cache_bytes and text_query:
+        text_hash = hashlib.sha256(text_query.encode("utf-8")).digest()
+        cache_bytes_key = cache_bytes + text_hash
+    
+    # 2. Attempt cache lookup
+    if cache_url_key:
+        embedding = query_cache.get_by_url(cache_url_key)
         if embedding is not None:
             cache_hit = True
-            logger.info(f"Query embedding cache HIT for URL: {cache_url}")
-    elif cache_bytes:
-        embedding = query_cache.get_by_bytes(cache_bytes)
+            logger.info(f"Query embedding cache HIT for key: {cache_url_key}")
+    elif cache_bytes_key:
+        embedding = query_cache.get_by_bytes(cache_bytes_key)
         if embedding is not None:
             cache_hit = True
-            logger.info("Query embedding cache HIT for image bytes")
+            logger.info("Query embedding cache HIT for image + text bytes")
             
-    # 2. Cache miss: generate embedding and save
+    # 3. Cache miss: generate embedding (and blend multimodal vectors if text_query is set)
     if embedding is None:
-        logger.info("Query embedding cache MISS. Processing and vectorizing image...")
-        embedding = generate_embedding(image)
-        if cache_url:
-            query_cache.set_by_url(cache_url, embedding)
-        elif cache_bytes:
-            query_cache.set_by_bytes(cache_bytes, embedding)
+        logger.info("Query embedding cache MISS. Processing and vectorizing...")
+        
+        # A. Get vision vector
+        if image is not None:
+            img_emb = generate_embedding(image)
+        else:
+            img_emb = [0.0] * 512
             
-    # 3. Build Pinecone metadata query filters
+        # B. Get text vector and blend if necessary
+        if text_query:
+            txt_emb = generate_text_embedding(text_query)
+            if image is not None:
+                # Blend dense vectors: blended = w * img_emb + (1 - w) * txt_emb
+                w_img = float(image_weight)
+                w_txt = 1.0 - w_img
+                blended = [w_img * img_emb[i] + w_txt * txt_emb[i] for i in range(512)]
+                # Re-normalize to unit length
+                norm = sum(x**2 for x in blended) ** 0.5
+                if norm > 0:
+                    blended = [x / norm for x in blended]
+                embedding = blended
+            else:
+                embedding = txt_emb
+        else:
+            embedding = img_emb
+            
+        # Store in cache
+        if cache_url_key:
+            query_cache.set_by_url(cache_url_key, embedding)
+        elif cache_bytes_key:
+            query_cache.set_by_bytes(cache_bytes_key, embedding)
+            
+    # 4. Build Pinecone metadata query filters (including range and brands)
     filters = {}
+    
+    # Price bounds range filtering
+    price_filter = {}
+    if min_price is not None:
+        price_filter["$gte"] = float(min_price)
+    if max_price is not None:
+        price_filter["$lte"] = float(max_price)
+    if price_filter:
+        filters["price"] = price_filter
+        
     if in_stock_only:
         filters["inventory"] = {"$gt": 0}
     if category:
         filters["category"] = {"$eq": category}
+    if brand:
+        filters["brand"] = {"$eq": brand}
         
-    # 4. Execute query
+    # 5. Execute query
     index = get_pinecone_index()
     query_res = index.query(
         vector=embedding,
@@ -554,7 +641,7 @@ def query_similar_products(
         filter=filters if filters else None
     )
     
-    # 5. Filter by similarity threshold and map responses
+    # 6. Filter by similarity threshold and map responses
     matches = []
     for match in query_res.get("matches", []):
         score = match.get("score", 0.0)

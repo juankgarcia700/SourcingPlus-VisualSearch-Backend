@@ -183,13 +183,20 @@ async def sync_catalog(payload: ProductSyncPayload, db: Session = Depends(get_db
 async def search_by_url(payload: SearchURLPayload, db: Session = Depends(get_db)):
     """
     Search for similar products using an image URL.
+    Supports multimodal text query blending, numerical price range filters, and brands.
     Hydrates matched IDs with rich metadata from the SQL database.
     """
     start_time = time.perf_counter()
     try:
         from app.services.cache import query_cache
+        import hashlib
         
-        cached_embedding = query_cache.get_by_url(payload.image_url)
+        # Modify cache key to include text query
+        cache_url_key = payload.image_url
+        if payload.image_url and payload.text_query:
+            cache_url_key = f"{payload.image_url}?text_query={payload.text_query}"
+            
+        cached_embedding = query_cache.get_by_url(cache_url_key)
         cache_hit = cached_embedding is not None
         
         if cache_hit:
@@ -199,7 +206,12 @@ async def search_by_url(payload: SearchURLPayload, db: Session = Depends(get_db)
                 score_threshold=payload.score_threshold,
                 in_stock_only=payload.in_stock_only,
                 category=payload.category,
-                cache_url=payload.image_url
+                cache_url=payload.image_url,
+                text_query=payload.text_query,
+                image_weight=payload.image_weight,
+                min_price=payload.min_price,
+                max_price=payload.max_price,
+                brand=payload.brand
             )
         else:
             logger.info(f"Cache miss for URL: {payload.image_url}. Downloading image...")
@@ -220,7 +232,12 @@ async def search_by_url(payload: SearchURLPayload, db: Session = Depends(get_db)
                 score_threshold=payload.score_threshold,
                 in_stock_only=payload.in_stock_only,
                 category=payload.category,
-                cache_url=payload.image_url
+                cache_url=payload.image_url,
+                text_query=payload.text_query,
+                image_weight=payload.image_weight,
+                min_price=payload.min_price,
+                max_price=payload.max_price,
+                brand=payload.brand
             )
             
         took_ms = int((time.perf_counter() - start_time) * 1000)
@@ -278,10 +295,16 @@ async def search_by_file(
     score_threshold: float = Query(0.0, ge=0.0, le=1.0),
     in_stock_only: bool = Query(False),
     category: Optional[str] = Query(None),
+    text_query: Optional[str] = Query(None),
+    image_weight: float = Query(0.7, ge=0.0, le=1.0),
+    min_price: Optional[float] = Query(None, ge=0.0),
+    max_price: Optional[float] = Query(None, ge=0.0),
+    brand: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """
     Search for similar products using an uploaded image file.
+    Supports multimodal text query blending, numerical price range filters, and brands.
     Hydrates matched IDs with rich metadata from the SQL database.
     """
     start_time = time.perf_counter()
@@ -291,8 +314,15 @@ async def search_by_file(
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
             
         from app.services.cache import query_cache
+        import hashlib
         
-        cached_embedding = query_cache.get_by_bytes(image_bytes)
+        # Modify cache key to include text query hash
+        cache_bytes_key = image_bytes
+        if image_bytes and text_query:
+            text_hash = hashlib.sha256(text_query.encode("utf-8")).digest()
+            cache_bytes_key = image_bytes + text_hash
+            
+        cached_embedding = query_cache.get_by_bytes(cache_bytes_key)
         cache_hit = cached_embedding is not None
         
         if cache_hit:
@@ -302,7 +332,12 @@ async def search_by_file(
                 score_threshold=score_threshold,
                 in_stock_only=in_stock_only,
                 category=category,
-                cache_bytes=image_bytes
+                cache_bytes=image_bytes,
+                text_query=text_query,
+                image_weight=image_weight,
+                min_price=min_price,
+                max_price=max_price,
+                brand=brand
             )
         else:
             try:
@@ -316,7 +351,12 @@ async def search_by_file(
                 score_threshold=score_threshold,
                 in_stock_only=in_stock_only,
                 category=category,
-                cache_bytes=image_bytes
+                cache_bytes=image_bytes,
+                text_query=text_query,
+                image_weight=image_weight,
+                min_price=min_price,
+                max_price=max_price,
+                brand=brand
             )
             
         took_ms = int((time.perf_counter() - start_time) * 1000)

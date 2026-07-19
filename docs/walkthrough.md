@@ -1,39 +1,33 @@
-# Walkthrough - Phase 2 Complete (Visual Search & Caching)
+# Walkthrough - Phase 5 Complete (Database Persistence & Hydration)
 
-We have completed the implementation and testing of **Phase 2: Visual Search Endpoint & Querying**.
+We have completed the implementation of **Phase 5: SQL Database Persistence & Metadata Hydration**. The service now stores full product profiles and retrieves them dynamically on search.
 
 ## Changes Implemented
 
-We added next-generation search capabilities, caching, and database filters to the backend:
+We introduced a relational database layer to store detailed product metadata and hydrate vector matches from Pinecone:
 
-### 1. High Performance Query Caching
-- **[app/services/cache.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/services/cache.py)**: Thread-safe Least Recently Used (LRU) cache (`max_size=100`) mapping image bytes (SHA-256 hash) and URLs to calculated embeddings. Bypasses model runs and downloads for repeat searches, resolving queries in **under 50ms**.
+### 1. Relational Database Layer (SQLAlchemy + SQLite)
+- **[app/database.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/database.py)**: Configures the SQLAlchemy database engine. It defaults to a local SQLite file database (`sourcingplus.db`) but supports external databases (like PostgreSQL) via a `DATABASE_URL` environment variable. Exposes a `get_db` dependency helper to yield database sessions.
+- **[app/models.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/models.py)**: Defines the `Product` ORM database model containing:
+  - `id` (Primary Key, matching Pinecone vector ID)
+  - `sku`, `title`, `description`, `price`, `category`, `inventory`, `image_url`, `brand`, and `product_url`.
 
-### 2. Next-Gen API Schema Control
-- **[app/schemas.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/schemas.py)**: Added Pydantic schemas for `/search/url` (`SearchURLPayload`) and formatted responses with timing and cache details (`SearchResponseItem`, `SearchResponse`).
-
-### 3. Filters & Querying Integration
-- **[app/services/vectorizer.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/services/vectorizer.py)**:
-  - Added `query_similar_products(...)` coordinating cache checks, category matching, and score threshold filtering.
-  - Updated the local `MockPineconeIndex.query` method to support and evaluate metadata filters (e.g. `$eq` for categories, `$gt` for inventory), enabling complete local offline test coverage.
-
-### 4. Search Endpoints REST Exposure
+### 2. Schema Upgrades & Sync Persistence
+- **[app/schemas.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/schemas.py)**: Added rich fields (`title`, `description`, `brand`, and `product_url`) to both ingestion (`ProductItem`) and search (`SearchResponseItem`) schemas.
 - **[app/api/endpoints.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/api/endpoints.py)**:
-  - `POST /api/v1/search/file`: Takes a file upload (`UploadFile`), checks cache using file bytes, and returns matches.
-  - `POST /api/v1/search/url`: Takes a JSON body with an image URL, checks cache using the URL string, downloads if cache miss, and returns matches.
+  - Modified `/sync` to write rich details to the SQL database concurrently during Pinecone indexing.
+  - Modified `/search/file` and `/search/url` to fetch Pinecone vector match IDs, query the SQL database to retrieve their full profiles, and return the hydrated product sheets. Implemented fallback handling if a product is missing in SQL.
+- **[app/main.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/main.py)**: Triggers table creation automatically on app startup (`Base.metadata.create_all`).
 
-### 5. Advanced Validation Tests
-- **[tests/test_search.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/tests/test_search.py)**: Validates:
-  - Cache hits bypassing downloads and neural network passes.
-  - Inventory availability (`in_stock_only` filters out inventory = 0 products).
-  - Umbral filtering (`score_threshold` excludes low matching results).
-  - Category segmentation.
+### 3. Automated Tests
+- **[tests/test_database.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/tests/test_database.py)**: Tests database sessions, inserts, and reads against an in-memory database.
+- **[tests/test_search.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/tests/test_search.py)**: Seeds both Pinecone and SQL databases with mock products and asserts that query results return correctly hydrated details (`title`, `brand`, `product_url`).
 
 ---
 
 ## Verification Results
 
-We executed the full pytest suite. All **14 tests passed** successfully.
+The full test suite was executed. All **15 tests passed** successfully.
 
 ### Test Suite Execution Output
 ```bash
@@ -47,24 +41,25 @@ cachedir: .pytest_cache
 rootdir: C:\Users\GarciaJ26\OneDrive - AkzoNobel\Mundial - Documents\DASHBOARDS & KPIs\SourcingPlus-VisualSearch-Backend
 plugins: anyio-4.14.1, asyncio-1.4.0
 asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
-collecting ... collected 14 items
+collecting ... collected 15 items
 
-tests/test_api.py::test_health_check PASSED                              [  7%]
-tests/test_api.py::test_root_route PASSED                                [ 14%]
-tests/test_api.py::test_sync_catalog_empty PASSED                        [ 21%]
-tests/test_api.py::test_sync_catalog_success PASSED                      [ 28%]
-tests/test_ingestor.py::test_process_image_bytes PASSED                  [ 35%]
-tests/test_ingestor.py::test_ingest_product_failure PASSED               [ 42%]
-tests/test_search.py::test_search_by_url_caching PASSED                  [ 50%]
-tests/test_search.py::test_search_in_stock_only PASSED                   [ 57%]
-tests/test_search.py::test_search_category_filter PASSED                 [ 64%]
-tests/test_search.py::test_search_score_threshold PASSED                 [ 71%]
-tests/test_search.py::test_search_by_file_caching PASSED                 [ 78%]
-tests/test_vectorizer.py::test_generate_mock_embedding PASSED            [ 85%]
-tests/test_vectorizer.py::test_generate_embedding_fallback PASSED        [ 92%]
+tests/test_api.py::test_health_check PASSED                              [  6%]
+tests/test_api.py::test_root_route PASSED                                [ 13%]
+tests/test_api.py::test_sync_catalog_empty PASSED                        [ 20%]
+tests/test_api.py::test_sync_catalog_success PASSED                      [ 26%]
+tests/test_database.py::test_create_and_read_product PASSED              [ 33%]
+tests/test_ingestor.py::test_process_image_bytes PASSED                  [ 40%]
+tests/test_ingestor.py::test_ingest_product_failure PASSED               [ 46%]
+tests/test_search.py::test_search_by_url_caching PASSED                  [ 53%]
+tests/test_search.py::test_search_in_stock_only PASSED                   [ 60%]
+tests/test_search.py::test_search_category_filter PASSED                 [ 66%]
+tests/test_search.py::test_search_score_threshold PASSED                 [ 73%]
+tests/test_search.py::test_search_by_file_caching PASSED                 [ 80%]
+tests/test_vectorizer.py::test_generate_mock_embedding PASSED            [ 86%]
+tests/test_vectorizer.py::test_generate_embedding_fallback PASSED        [ 93%]
 tests/test_vectorizer.py::test_upsert_products_to_pinecone PASSED        [100%]
 
-======================== 14 passed, 1 warning in 5.21s ========================
+======================== 15 passed, 1 warning in 4.19s ========================
 ```
 
-The repository has been updated and all modifications have been pushed to GitHub.
+The changes have been pushed and synced on GitHub.

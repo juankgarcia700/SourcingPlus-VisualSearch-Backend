@@ -18,9 +18,23 @@
   - [x] Create `tests/test_api.py`
   - [x] Run pytest to verify all tests pass
 
-- [ ] Implement Phase 2 - Visual Search & Querying
-  - [ ] Create `app/services/cache.py` for LRU query caching
-  - [ ] Add search query and response Pydantic schemas in `app/schemas.py`
-  - [ ] Update `query_similar_products` in `app/services/vectorizer.py` with caching, thresholding, and metadata filters
-  - [ ] Implement search endpoints in `app/api/endpoints.py` (`POST /search/file` and `POST /search/url`)
-  - [ ] Create `tests/test_search.py` and run pytest suite to verify Phase 1 and 2 pass
+- [x] Implement Phase 2 - Visual Search & Querying
+  - [x] Create `app/services/cache.py` for LRU query caching
+  - [x] Add search query and response Pydantic schemas in `app/schemas.py`
+  - [x] Update `query_similar_products` in `app/services/vectorizer.py` with caching, thresholding, and metadata filters
+  - [x] Implement search endpoints in `app/api/endpoints.py` (`POST /search/file` and `POST /search/url`)
+  - [x] Create `tests/test_search.py` and run pytest suite to verify Phase 1 and 2 pass
+
+- [x] Implement Phase 5 - SQL Database Persistence & Metadata Hydration
+  - [x] Create `app/database.py` with SQLAlchemy setup
+  - [x] Create `app/models.py` defining SQL product metadata profiles
+  - [x] Update schemas to include `title`, `description`, `brand`, `product_url`
+  - [x] Update API endpoints to write to SQL DB during sync and hydrate vectors by ID on search
+  - [x] Create `tests/test_database.py` and verify SQL connectivity
+
+- [x] Implement Phase 6 - Multimodal Hybrid Search & Range Filtering
+  - [x] Implement text query embedding blending with visual query embedding using CLIP text encoder
+  - [x] Implement multi-key unique caching to avoid image caches colliding on distinct search texts
+  - [x] Add `text_query`, `image_weight`, `min_price`, `max_price`, and `brand` query fields
+  - [x] Map numerical limits to Pinecone metadata query operators (`$gte`, `$lte`)
+  - [x] Create `tests/test_hybrid.py` and verify hybrid search behavior

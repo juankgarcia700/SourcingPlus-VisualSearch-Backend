@@ -1,29 +1,47 @@
-# Implementation Plan - Phase 5: SQL Database Persistence & Metadata Hydration
+# Implementation Plan - Phase 6: Multimodal Hybrid Search & Range Filtering
 
-This plan outlines the architecture and execution steps for building Phase 5 of the **SourcingPlus Visual Search Backend**. It focuses on integrating an SQL relational database to store full product metadata and hydrating visual search results with detailed product sheets.
+This plan outlines the architecture and execution steps for building Phase 6 of the **SourcingPlus Visual Search Backend**. It introduces hybrid search capabilities, combining query images with unstructured text search and advanced numerical range filters (e.g., price ranges) in Pinecone.
 
 ## Goal Description
-Build a relational metadata layer to augment the vector database (Pinecone):
-1. **SQL Database Engine**: Integrate **SQLAlchemy** ORM using **SQLite** as the default storage engine (with support for external databases like PostgreSQL via a `DATABASE_URL` environment variable).
-2. **Metadata Extension**: Add rich product fields (e.g., `title`, `description`, `brand`, and `product_url`) to the catalog sync endpoint.
-3. **Data Persistence**: Save full product profiles in the SQL database during the `/sync` operation, matching the primary key `id` with the Pinecone vector ID.
-4. **Metadata Hydration**: Retrieve visual match IDs from Pinecone, query the SQL database to fetch their complete profiles (brand, description, title, etc.), and return the hydrated product sheets with their similarity scores.
+Build a multimodal visual search engine that supports:
+1. **Dense Vector Blending (Multimodal Query)**: Combining a query image embedding with a query text embedding (using CLIP's text encoder) to allow natural language description queries (e.g., searching with an image of a shoe and typing "blue", "sports", or "leather").
+2. **Numeric Range Filters**: Allowing queries to specify `min_price` and `max_price`, transforming them into Pinecone logical range filters (`{"price": {"$gte": min, "$lte": max}}`).
+3. **Strict Metadata Filters**: Supporting brand-specific and category-specific filtering directly in Pinecone.
+4. **FastAPI Contract Integration**: Extending search schemas (`SearchURLPayload`) to support `text_query`, `min_price`, `max_price`, and `brand`.
 
 ---
 
-## Technical Architecture
+## Technical Specifications
 
-```mermaid
-graph TD
-    Client[Client / Frontend] -->|1. POST /sync| API[FastAPI API]
-    Client -->|4. POST /search| API
-    
-    API -->|2a. Normalizes & Uploads Vectors| Pinecone[Pinecone Vector DB]
-    API -->|2b. Saves Rich Profiles| DB[(SQL Database: SQLite/Postgres)]
-    
-    Pinecone -->|5. Returns matched IDs & Scores| API
-    API -->|6. Hydrates details by ID| DB
-    API -->|7. Returns Hydrated Products + Scores| Client
+### 1. Vector Blending Algorithm (Multimodal)
+When both an `image` and a `text_query` are provided:
+1. We compute the normalized image embedding vector $\vec{v}_{img}$ (512-dim).
+2. We compute the normalized text embedding vector $\vec{v}_{txt}$ (512-dim) using CLIP's text encoder.
+3. We blend the two vectors using a weighting factor $\alpha$ (default: `0.7` for image, `0.3` for text):
+   $$\vec{v}_{blended} = \alpha \vec{v}_{img} + (1 - \alpha) \vec{v}_{txt}$$
+4. We normalize $\vec{v}_{blended}$ to unit length and run the query against Pinecone.
+*In mock mode, the mock generator will deterministically incorporate the text query's hash into the mock vector.*
+
+### 2. Numerical Filters Mapping
+Pinecone metadata filters will be built dynamically:
+```python
+filters = {}
+# Range filtering for prices
+price_filter = {}
+if min_price is not None:
+    price_filter["$gte"] = float(min_price)
+if max_price is not None:
+    price_filter["$lte"] = float(max_price)
+if price_filter:
+    filters["price"] = price_filter
+
+# Inventory and metadata filters
+if in_stock_only:
+    filters["inventory"] = {"$gt": 0}
+if category:
+    filters["category"] = {"$eq": category}
+if brand:
+    filters["brand"] = {"$eq": brand}
 ```
 
 ---
@@ -31,62 +49,53 @@ graph TD
 ## User Review Required
 
 > [!IMPORTANT]
-> **New Dependencies**
-> We will add `sqlalchemy` to `requirements.txt`. SQLite is built into Python, meaning no external database servers need to be installed or run in your Codespace.
+> **CLIP Text Encoder Dependencies**
+> To support text embedding generation, we will initialize CLIP's text encoder alongside the vision encoder. If `USE_MOCK_EMBEDDINGS=True` is enabled, the mock generator will simulate this blending locally.
 
 > [!TIP]
-> **Data Hydration Fallback**
-> If a product ID returned by Pinecone is not found in the SQL database (for example, if it was indexed in Phase 1 before the SQL database was set up), the API will gracefully fall back to returning the metadata stored in Pinecone (SKU, price, category, inventory) and place placeholder values in the new fields (`title`, `brand`, etc.). This guarantees backward compatibility.
+> **Image Weight Customization**
+> We propose introducing a parameter `image_weight` (float, default: `0.7`, range: `0.0` to `1.0`) in the query payload, allowing frontend clients to tune whether they want the search to favor visual similarity (`1.0`) or text instructions (`0.0`).
 
 ---
 
 ## Open Questions
 
 > [!WARNING]
-> 1. **Default Database Path**: We will default to a local SQLite file named `sourcingplus.db` in the project root. This database file will be added to `.gitignore` so it is not committed to GitHub. Is this acceptable?
+> 1. **Price Filtering Fallback**: If a product has no price indexed (for legacy data), Pinecone metadata queries with range filters will exclude it. This is standard behavior. We assume all products have valid pricing.
 
 ---
 
 ## Proposed Changes
 
-### Component: Database Configuration & Models
+### Component: Schemas
 
-#### [NEW] [app/database.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/database.py)
-Sets up the SQLAlchemy engine, session maker, and DB helper session dependencies.
-
-#### [NEW] [app/models.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/models.py)
-Defines the `Product` SQLAlchemy model mapping the SQLite database table columns.
+#### [MODIFY] [app/schemas.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/schemas.py)
+*   Update `SearchURLPayload` to include `text_query`, `image_weight`, `min_price`, `max_price`, and `brand`.
+*   Update `/search/file` query parameters to include these parameters.
 
 ---
 
-### Component: Schemas & API Endpoints
+### Component: AI & Vectorizer Services
 
-#### [MODIFY] [app/schemas.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/schemas.py)
-*   Update `ProductItem` schema to include optional fields: `title`, `description`, `brand`, and `product_url`.
-*   Update `SearchResponseItem` schema to return these rich metadata fields.
+#### [MODIFY] [app/services/vectorizer.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/services/vectorizer.py)
+*   Implement CLIP text embedding extraction inside `generate_embedding` when text is passed.
+*   Update `query_similar_products` to handle vector blending and range filters.
+*   Update `MockPineconeIndex.query` to support Pinecone numeric range filters (`$gte`, `$lte`).
+
+---
+
+### Component: API Endpoints
 
 #### [MODIFY] [app/api/endpoints.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/api/endpoints.py)
-*   Inject database session dependency `db: Session = Depends(get_db)`.
-*   Update `/sync` to write data to both Pinecone and the SQL database.
-*   Update `/search/file` and `/search/url` to perform Pinecone queries and hydrate results from the SQL database.
+*   Pass new parameters (`text_query`, `image_weight`, `min_price`, `max_price`, `brand`) from `/search/url` and `/search/file` into the vectorizer service.
 
 ---
 
 ### Verification and Testing
 
-#### [NEW] [tests/test_database.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/tests/test_database.py)
-Unit tests for database session initialization, product creation, and reads.
-
-#### [MODIFY] [tests/test_search.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/tests/test_search.py)
-Update search tests to assert that query results contain hydrated fields like `title`, `brand`, and `product_url`.
-
----
-
-## Verification Plan
-
-### Automated Tests
-Run pytest in the workspace:
-```bash
-python -m pytest -v
-```
-Verify that all tests pass, confirming DB integration and database schema creation.
+#### [NEW] [tests/test_hybrid.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/tests/test_hybrid.py)
+Create integration tests verifying:
+- Numerical range filtering (`price` bounds).
+- Text blending (verifying vector adjusts based on text input).
+- Brand-specific filtering.
+- Hybrid searching via both url and file uploads.

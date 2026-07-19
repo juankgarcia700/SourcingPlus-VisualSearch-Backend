@@ -1,4 +1,5 @@
-from sqlalchemy import Column, String, Float, Integer
+from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean
+from datetime import datetime, timezone
 from app.database import Base
 
 class Product(Base):
@@ -30,3 +31,18 @@ class Product(Base):
             "brand": self.brand,
             "product_url": self.product_url
         }
+
+
+class SearchLog(Base):
+    __tablename__ = "search_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    query_type = Column(String, nullable=False)        # "url" or "file"
+    query_value = Column(String, nullable=True)         # Image URL or filename
+    text_query = Column(String, nullable=True)          # Associated text search input if any
+    took_ms = Column(Integer, nullable=False)           # Search execution time in ms
+    cache_hit = Column(Boolean, nullable=False)         # Cache status
+    top_match_id = Column(String, nullable=True)        # ID of the top returned product
+    top_match_score = Column(Float, nullable=True)      # Cosine score of the top returned product
+

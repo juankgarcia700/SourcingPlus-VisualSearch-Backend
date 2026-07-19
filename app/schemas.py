@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 # --- Phase 1: Ingestion Schemas ---
 class ProductItem(BaseModel):
@@ -52,3 +52,23 @@ class SearchResponse(BaseModel):
     results: List[SearchResponseItem] = Field(..., description="Sorted list of matching items")
     took_ms: int = Field(..., description="Time taken to process and execute search in milliseconds")
     cache_hit: bool = Field(..., description="Whether the image embedding was fetched from the local cache")
+
+
+# --- Phase 7: Analytics Schemas ---
+class AnalyticsStatsResponse(BaseModel):
+    total_queries: int = Field(..., description="Total number of search queries logged")
+    cache_hit_rate: float = Field(..., description="Ratio of cache hits to total queries (0.0 to 1.0)")
+    average_took_ms: float = Field(..., description="Average search execution latency in milliseconds")
+    query_type_distribution: Dict[str, int] = Field(..., description="Distribution count between url and file search queries")
+
+class TrendingProductItem(BaseModel):
+    id: str = Field(..., description="Product identifier")
+    sku: str = Field(..., description="Product SKU")
+    title: Optional[str] = Field(None, description="Product title")
+    brand: Optional[str] = Field(None, description="Product brand name")
+    price: float = Field(..., description="Product retail price")
+    image_url: str = Field(..., description="Image URL of the product")
+    search_hits: int = Field(..., description="Number of times this product was returned as the top result")
+
+class TrendingResponse(BaseModel):
+    results: List[TrendingProductItem] = Field(..., description="Top trending products list")

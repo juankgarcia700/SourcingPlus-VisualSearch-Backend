@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException, File, UploadFile, Query, Depends
+from fastapi import APIRouter, HTTPException, File, UploadFile, Query, Depends, BackgroundTasks
 from typing import List, Optional
 import logging
 import time
 import httpx
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.schemas import (
@@ -10,17 +11,52 @@ from app.schemas import (
     SyncResponse, 
     SearchURLPayload, 
     SearchResponse, 
-    SearchResponseItem
+    SearchResponseItem,
+    AnalyticsStatsResponse,
+    TrendingResponse,
+    TrendingProductItem
 )
 from app.services.ingestor import ImageIngestorService, ProductInput
 from app.services.vectorizer import upsert_products_to_pinecone, query_similar_products
-from app.database import get_db
-from app.models import Product
+from app.database import get_db, SessionLocal
+from app.models import Product, SearchLog
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 ingestor_service = ImageIngestorService()
+
+
+def record_search_log(
+    query_type: str,
+    query_value: Optional[str],
+    text_query: Optional[str],
+    took_ms: int,
+    cache_hit: bool,
+    top_match_id: Optional[str],
+    top_match_score: Optional[float]
+):
+    """
+    Logs search queries to the database asynchronously in a thread-safe database session.
+    """
+    db = SessionLocal()
+    try:
+        log_entry = SearchLog(
+            query_type=query_type,
+            query_value=query_value,
+            text_query=text_query,
+            took_ms=took_ms,
+            cache_hit=cache_hit,
+            top_match_id=top_match_id,
+            top_match_score=top_match_score
+        )
+        db.add(log_entry)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Failed to record background search log: {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 @router.get("/health", response_model=dict)
 def health_check():
@@ -180,7 +216,7 @@ async def sync_catalog(payload: ProductSyncPayload, db: Session = Depends(get_db
 
 
 @router.post("/search/url", response_model=SearchResponse)
-async def search_by_url(payload: SearchURLPayload, db: Session = Depends(get_db)):
+async def search_by_url(payload: SearchURLPayload, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
     Search for similar products using an image URL.
     Supports multimodal text query blending, numerical price range filters, and brands.
@@ -275,6 +311,20 @@ async def search_by_url(payload: SearchURLPayload, db: Session = Depends(get_db)
                     score=m["score"]
                 ))
                 
+        # Log search telemetry asynchronously
+        top_match_id = hydrated_results[0].id if hydrated_results else None
+        top_match_score = hydrated_results[0].score if hydrated_results else None
+        background_tasks.add_task(
+            record_search_log,
+            "url",
+            payload.image_url,
+            payload.text_query,
+            took_ms,
+            cache_hit,
+            top_match_id,
+            top_match_score
+        )
+        
         return SearchResponse(
             results=hydrated_results,
             took_ms=took_ms,
@@ -300,6 +350,7 @@ async def search_by_file(
     min_price: Optional[float] = Query(None, ge=0.0),
     max_price: Optional[float] = Query(None, ge=0.0),
     brand: Optional[str] = Query(None),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db)
 ):
     """
@@ -394,6 +445,20 @@ async def search_by_file(
                     score=m["score"]
                 ))
                 
+        # Log search telemetry asynchronously
+        top_match_id = hydrated_results[0].id if hydrated_results else None
+        top_match_score = hydrated_results[0].score if hydrated_results else None
+        background_tasks.add_task(
+            record_search_log,
+            "file",
+            file.filename,
+            text_query,
+            took_ms,
+            cache_hit,
+            top_match_id,
+            top_match_score
+        )
+        
         return SearchResponse(
             results=hydrated_results,
             took_ms=took_ms,
@@ -405,3 +470,88 @@ async def search_by_file(
     except Exception as e:
         logger.error(f"Error during visual search by file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal search error: {str(e)}")
+
+
+@router.get("/analytics/stats", response_model=AnalyticsStatsResponse)
+def get_analytics_stats(db: Session = Depends(get_db)):
+    """
+    Computes visual search stats, including cache hit rates, average times,
+    and distribution between url and file-upload search requests.
+    """
+    try:
+        total_queries = db.query(SearchLog).count()
+        if total_queries == 0:
+            return AnalyticsStatsResponse(
+                total_queries=0,
+                cache_hit_rate=0.0,
+                average_took_ms=0.0,
+                query_type_distribution={"url": 0, "file": 0}
+            )
+
+        cache_hits = db.query(SearchLog).filter(SearchLog.cache_hit == True).count()
+        cache_hit_rate = float(cache_hits) / total_queries
+
+        # Use func.avg to calculate average took_ms
+        avg_took_ms = db.query(func.avg(SearchLog.took_ms)).scalar() or 0.0
+
+        # Query type distribution count
+        url_count = db.query(SearchLog).filter(SearchLog.query_type == "url").count()
+        file_count = db.query(SearchLog).filter(SearchLog.query_type == "file").count()
+
+        return AnalyticsStatsResponse(
+            total_queries=total_queries,
+            cache_hit_rate=round(cache_hit_rate, 4),
+            average_took_ms=round(float(avg_took_ms), 2),
+            query_type_distribution={"url": url_count, "file": file_count}
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch analytics statistics: {e}")
+        raise HTTPException(status_code=500, detail=f"Database aggregation error: {str(e)}")
+
+
+@router.get("/analytics/trending", response_model=TrendingResponse)
+def get_trending_products(top_k: int = Query(5, ge=1, le=50), db: Session = Depends(get_db)):
+    """
+    Calculates top trending items returned as the #1 best match in visual searches.
+    """
+    try:
+        # Group search logs by top_match_id and count occurrences
+        results = (
+            db.query(SearchLog.top_match_id, func.count(SearchLog.top_match_id).label("hits"))
+            .filter(SearchLog.top_match_id.isnot(None))
+            .group_by(SearchLog.top_match_id)
+            .order_by(func.count(SearchLog.top_match_id).desc())
+            .limit(top_k)
+            .all()
+        )
+
+        trending_items = []
+        for match_id, hits in results:
+            # Query Product details for metadata enrichment
+            prod = db.query(Product).filter(Product.id == match_id).first()
+            if prod:
+                trending_items.append(TrendingProductItem(
+                    id=prod.id,
+                    sku=prod.sku,
+                    title=prod.title,
+                    brand=prod.brand,
+                    price=prod.price,
+                    image_url=prod.image_url,
+                    search_hits=hits
+                ))
+            else:
+                # Placeholder fallback if product doesn't exist in local metadata DB anymore
+                trending_items.append(TrendingProductItem(
+                    id=match_id,
+                    sku="UNKNOWN",
+                    title="Product info not found in DB",
+                    brand="Unknown",
+                    price=0.0,
+                    image_url="",
+                    search_hits=hits
+                ))
+
+        return TrendingResponse(results=trending_items)
+    except Exception as e:
+        logger.error(f"Failed to query trending products: {e}")
+        raise HTTPException(status_code=500, detail=f"Database aggregation error: {str(e)}")

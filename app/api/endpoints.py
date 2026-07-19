@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException, File, UploadFile, Query
+from fastapi import APIRouter, HTTPException, File, UploadFile, Query, Depends
 from typing import List, Optional
 import logging
 import time
 import httpx
+from sqlalchemy.orm import Session
 
 from app.schemas import (
     ProductSyncPayload, 
@@ -13,6 +14,8 @@ from app.schemas import (
 )
 from app.services.ingestor import ImageIngestorService, ProductInput
 from app.services.vectorizer import upsert_products_to_pinecone, query_similar_products
+from app.database import get_db
+from app.models import Product
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +30,11 @@ def health_check():
     return {"status": "healthy"}
 
 @router.post("/sync", response_model=SyncResponse)
-async def sync_catalog(payload: ProductSyncPayload):
+async def sync_catalog(payload: ProductSyncPayload, db: Session = Depends(get_db)):
     """
     Synchronizes the product catalog by downloading/processing images,
-    generating 512-dimension CLIP embeddings, and indexing them in Pinecone.
+    generating 512-dimension CLIP embeddings, indexing them in Pinecone,
+    and persisting rich metadata profiles to the SQL database.
     """
     if not payload.products:
         return SyncResponse(
@@ -48,7 +52,11 @@ async def sync_catalog(payload: ProductSyncPayload):
             "sku": item.sku,
             "price": item.price,
             "category": item.category,
-            "inventory": item.inventory
+            "inventory": item.inventory,
+            "title": item.title,
+            "description": item.description,
+            "brand": item.brand,
+            "product_url": item.product_url
         }
         product_inputs.append(
             ProductInput(
@@ -73,10 +81,15 @@ async def sync_catalog(payload: ProductSyncPayload):
             success_products.append({
                 "id": r.id,
                 "image": r.processed_image,
+                "image_url": r.image_url,
                 "sku": r.metadata.get("sku", ""),
                 "price": r.metadata.get("price", 0.0),
                 "category": r.metadata.get("category", ""),
-                "inventory": r.metadata.get("inventory", 0)
+                "inventory": r.metadata.get("inventory", 0),
+                "title": r.metadata.get("title"),
+                "description": r.metadata.get("description"),
+                "brand": r.metadata.get("brand"),
+                "product_url": r.metadata.get("product_url")
             })
         else:
             err_msg = f"Product {r.id} image processing failed: {r.error_message}"
@@ -105,6 +118,49 @@ async def sync_catalog(payload: ProductSyncPayload):
             
         status = "success" if indexed_count > 0 else "failed"
         
+        # 5. Persist rich metadata profiles to SQL Database
+        if indexed_count > 0:
+            for p in success_products:
+                try:
+                    db_product = db.query(Product).filter(Product.id == p["id"]).first()
+                    if db_product:
+                        # Update existing product metadata
+                        db_product.sku = p["sku"]
+                        db_product.title = p.get("title")
+                        db_product.description = p.get("description")
+                        db_product.price = p["price"]
+                        db_product.category = p["category"]
+                        db_product.inventory = p["inventory"]
+                        db_product.brand = p.get("brand")
+                        db_product.product_url = p.get("product_url")
+                        db_product.image_url = p.get("image_url", "")
+                    else:
+                        # Insert new product metadata
+                        db_product = Product(
+                            id=p["id"],
+                            sku=p["sku"],
+                            title=p.get("title"),
+                            description=p.get("description"),
+                            price=p["price"],
+                            category=p["category"],
+                            inventory=p["inventory"],
+                            brand=p.get("brand"),
+                            product_url=p.get("product_url"),
+                            image_url=p.get("image_url", "")
+                        )
+                        db.add(db_product)
+                except Exception as db_err:
+                    logger.error(f"Failed to stage product {p['id']} to SQL database: {db_err}")
+                    errors.append(f"SQL Database stage error for {p['id']}: {str(db_err)}")
+            
+            try:
+                db.commit()
+                logger.info(f"Successfully persisted metadata for {processed_count} products to the SQL database.")
+            except Exception as commit_err:
+                logger.error(f"Failed to commit metadata to SQL database: {commit_err}")
+                db.rollback()
+                errors.append(f"SQL Database commit error: {str(commit_err)}")
+        
         return SyncResponse(
             status=status,
             processed_count=processed_count,
@@ -124,10 +180,10 @@ async def sync_catalog(payload: ProductSyncPayload):
 
 
 @router.post("/search/url", response_model=SearchResponse)
-async def search_by_url(payload: SearchURLPayload):
+async def search_by_url(payload: SearchURLPayload, db: Session = Depends(get_db)):
     """
     Search for similar products using an image URL.
-    Bypasses download and inference if the URL is cached.
+    Hydrates matched IDs with rich metadata from the SQL database.
     """
     start_time = time.perf_counter()
     try:
@@ -169,9 +225,41 @@ async def search_by_url(payload: SearchURLPayload):
             
         took_ms = int((time.perf_counter() - start_time) * 1000)
         
-        results = [SearchResponseItem(**m) for m in matches]
+        # Hydrate matching IDs with database profile sheets
+        hydrated_results = []
+        for m in matches:
+            prod_id = m["id"]
+            db_product = db.query(Product).filter(Product.id == prod_id).first()
+            if db_product:
+                hydrated_results.append(SearchResponseItem(
+                    id=prod_id,
+                    sku=db_product.sku,
+                    title=db_product.title,
+                    description=db_product.description,
+                    price=db_product.price,
+                    category=db_product.category,
+                    inventory=db_product.inventory,
+                    brand=db_product.brand,
+                    product_url=db_product.product_url,
+                    score=m["score"]
+                ))
+            else:
+                logger.warning(f"Product {prod_id} found in Pinecone but missing in SQL database. Hydrating with vector metadata fallback.")
+                hydrated_results.append(SearchResponseItem(
+                    id=prod_id,
+                    sku=m.get("sku", ""),
+                    title=None,
+                    description=None,
+                    price=m.get("price", 0.0),
+                    category=m.get("category", ""),
+                    inventory=m.get("inventory", 0),
+                    brand=None,
+                    product_url=None,
+                    score=m["score"]
+                ))
+                
         return SearchResponse(
-            results=results,
+            results=hydrated_results,
             took_ms=took_ms,
             cache_hit=cache_hit
         )
@@ -189,11 +277,12 @@ async def search_by_file(
     top_k: int = Query(10, ge=1, le=100),
     score_threshold: float = Query(0.0, ge=0.0, le=1.0),
     in_stock_only: bool = Query(False),
-    category: Optional[str] = Query(None)
+    category: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
 ):
     """
-    Search for similar products using an uploaded image file (multipart/form-data).
-    Bypasses inference if the file content hash is cached.
+    Search for similar products using an uploaded image file.
+    Hydrates matched IDs with rich metadata from the SQL database.
     """
     start_time = time.perf_counter()
     try:
@@ -232,9 +321,41 @@ async def search_by_file(
             
         took_ms = int((time.perf_counter() - start_time) * 1000)
         
-        results = [SearchResponseItem(**m) for m in matches]
+        # Hydrate matching IDs with database profile sheets
+        hydrated_results = []
+        for m in matches:
+            prod_id = m["id"]
+            db_product = db.query(Product).filter(Product.id == prod_id).first()
+            if db_product:
+                hydrated_results.append(SearchResponseItem(
+                    id=prod_id,
+                    sku=db_product.sku,
+                    title=db_product.title,
+                    description=db_product.description,
+                    price=db_product.price,
+                    category=db_product.category,
+                    inventory=db_product.inventory,
+                    brand=db_product.brand,
+                    product_url=db_product.product_url,
+                    score=m["score"]
+                ))
+            else:
+                logger.warning(f"Product {prod_id} found in Pinecone but missing in SQL database. Hydrating with vector metadata fallback.")
+                hydrated_results.append(SearchResponseItem(
+                    id=prod_id,
+                    sku=m.get("sku", ""),
+                    title=None,
+                    description=None,
+                    price=m.get("price", 0.0),
+                    category=m.get("category", ""),
+                    inventory=m.get("inventory", 0),
+                    brand=None,
+                    product_url=None,
+                    score=m["score"]
+                ))
+                
         return SearchResponse(
-            results=results,
+            results=hydrated_results,
             took_ms=took_ms,
             cache_hit=cache_hit
         )

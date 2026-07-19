@@ -5,10 +5,14 @@ from typing import List, Optional
 class ProductItem(BaseModel):
     id: str = Field(..., description="Unique product identifier")
     sku: str = Field(..., description="Stock Keeping Unit")
+    title: Optional[str] = Field(default=None, description="Product title/name")
+    description: Optional[str] = Field(default=None, description="Detailed product description")
     price: float = Field(..., description="Retail sale price")
     category: str = Field(..., description="Product category name")
     inventory: int = Field(..., description="Available inventory quantity")
     image_url: str = Field(..., description="URL of the product image")
+    brand: Optional[str] = Field(default=None, description="Product brand name")
+    product_url: Optional[str] = Field(default=None, description="Link to the product page")
 
 class ProductSyncPayload(BaseModel):
     products: List[ProductItem] = Field(..., description="List of products to synchronize")
@@ -30,9 +34,13 @@ class SearchURLPayload(BaseModel):
 class SearchResponseItem(BaseModel):
     id: str = Field(..., description="Product identifier")
     sku: str = Field(..., description="Stock Keeping Unit")
+    title: Optional[str] = Field(default=None, description="Product title/name")
+    description: Optional[str] = Field(default=None, description="Detailed product description")
     price: float = Field(..., description="Retail price")
     category: str = Field(..., description="Product category")
     inventory: int = Field(..., description="Available inventory")
+    brand: Optional[str] = Field(default=None, description="Product brand")
+    product_url: Optional[str] = Field(default=None, description="Link to product page")
     score: float = Field(..., description="Cosine similarity score (0.0 to 1.0)")
 
 class SearchResponse(BaseModel):

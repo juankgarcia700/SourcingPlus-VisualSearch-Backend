@@ -4,6 +4,11 @@ import logging
 
 from app.api.endpoints import router as api_router
 from app.config import settings
+from app.database import Base, engine
+import app.models
+
+# Initialize SQL Database tables
+Base.metadata.create_all(bind=engine)
 
 # Configure logger
 logging.basicConfig(

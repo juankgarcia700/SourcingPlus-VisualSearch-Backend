@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     pinecone_index_name: str = "sourcingplus-visual-search"
     use_mock_embeddings: bool = True
     openai_api_key: str = "mock-key"
+    database_url: str = "sqlite:///./sourcingplus.db"
 
     # Allow loading from a .env file if it exists
     model_config = SettingsConfigDict(

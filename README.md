@@ -1,8 +1,8 @@
-# SourcingPlus Visual Search Backend 🚀
+# SourcingPlus Visual Search Backend & Dashboard 🚀
 
-Este es el backend de búsqueda visual para **SourcingPlus**, diseñado bajo una arquitectura limpia y modular en Python utilizando **FastAPI**. 
+Este es el backend de búsqueda visual y panel analítico para **SourcingPlus**, diseñado bajo una arquitectura limpia y modular en Python utilizando **FastAPI** y **SQLAlchemy**.
 
-El microservicio se encarga de recibir sincronizaciones de catálogos de productos, procesar y normalizar imágenes para modelos de Inteligencia Artificial (CLIP), y buscar/sincronizar vectores en un índice vectorial serverless de **Pinecone** para búsquedas visuales en tiempo real.
+El microservicio se encarga de recibir sincronizaciones de catálogos de productos, procesar y normalizar imágenes para modelos de Inteligencia Artificial (CLIP), y buscar/sincronizar vectores en un índice vectorial serverless de **Pinecone** para búsquedas visuales en tiempo real. Adicionalmente, cuenta con persistencia de metadatos en una base de datos relacional local (SQLite) y un panel interactivo de analíticas en tiempo real (Frontend en Light Theme corporativo).
 
 ---
 
@@ -10,23 +10,28 @@ El microservicio se encarga de recibir sincronizaciones de catálogos de product
 
 Este microservicio incorpora prácticas y características avanzadas que optimizan la latencia, la relevancia de búsqueda y la experiencia en e-commerce y retail sourcing:
 
-1.  **Caché de Embeddings en Memoria (Bypass de Latencia):**
-    *   Generar embeddings con modelos de Deep Learning (como CLIP) es costoso a nivel de CPU/GPU. El sistema integra un caché LRU (Least Recently Used) que asocia hashes de imágenes y URLs con sus vectores calculados. Las búsquedas repetidas se resuelven en **menos de 50 ms** sin volver a descargar imágenes ni correr el modelo de IA.
-2.  **Filtrado por Umbral de Similitud (`score_threshold`):**
-    *   Filtra dinámicamente resultados irrelevantes. Si una imagen no tiene suficiente similitud de diseño con el catálogo, la API rechaza coincidencias débiles (ej. similitud < 75%) reduciendo el ruido en el frontend.
-3.  **Filtros de Negocio en Base Vectorial (`in_stock_only`):**
-    *   Permite excluir productos sin existencias en tiempo real inyectando filtros lógicos (`inventory > 0`) directamente en la consulta de Pinecone, evitando que los clientes encuentren productos agotados en sus búsquedas visuales.
-4.  **Búsqueda Segmentada por Metadatos:**
-    *   Permite filtrar búsquedas dentro de categorías específicas, optimizando los tiempos de respuesta y la precisión en catálogos B2B masivos.
+1.  **Interfaz Web Integrada (Fase 8 - Consulting Light Theme):**
+    *   Una aplicación web Single-Page (SPA) servida directamente desde el endpoint raíz (`GET /`) de la API. Incorpora una paleta de colores corporativa (azul zafiro, azul marino y gris pizarra) adecuada para perfiles de consultoría. Permite subir fotos por drag-and-drop, aplicar filtros y ver estadísticas de rendimiento.
+2.  **Persistencia de Fichas de Producto e Hidratación (Fase 5):**
+    *   Los metadatos ricos de los productos (título, descripción detallada, marca, URL de compra) se guardan de forma relacional en una base de datos SQLite integrada. Al realizar la búsqueda visual en Pinecone, el backend recupera los IDs coincidentes e "hidrata" automáticamente los resultados con su ficha completa de la base de datos SQL.
+3.  **Búsqueda Híbrida / Multimodal (Fase 6):**
+    *   Permite mezclar búsquedas visuales con refinamientos textuales (ej. subir la foto de una zapatilla y escribir "color azul" o "deportivo"). El backend genera embeddings de texto usando el codificador CLIP, mezcla vectorialmente ambos embeddings ponderadamente (`image_weight`) y realiza la búsqueda densa.
+4.  **Caché Avanzado Multi-Clave de Embeddings:**
+    *   Optimiza la latencia a **menos de 50 ms** almacenando embeddings en memoria (LRU Cache). Adapta las claves para incluir las refinaciones de texto, garantizando que búsquedas de la misma imagen con textos distintos no colisionen.
+5.  **Filtros Numéricos y de Metadatos en Base Vectorial:**
+    *   Inyección de filtros lógicos en Pinecone para rangos de precio (`min_price`, `max_price`), marcas (`brand`), categorías y stock disponible (`in_stock_only`).
+6.  **Telemetría y Analíticas de Consulta en 2do Plano (Fase 7):**
+    *   Registro de latencia, aciertos de caché y tendencias de productos de forma asíncrona mediante `BackgroundTasks` de FastAPI, garantizando que el guardado en disco no impacte la respuesta del usuario.
 
 ---
 
 ## 🛠️ Stack Tecnológico
 *   **Lenguaje:** Python 3.10+
 *   **Framework Web:** FastAPI (con Uvicorn para el servidor ASGI)
-*   **Procesamiento de Imágenes:** Pillow (PIL) & NumPy
-*   **Modelo de Embeddings (IA):** OpenAI CLIP (`openai/clip-vit-base-patch32` vía Hugging Face Transformers)
+*   **Base de Datos Relacional / ORM:** SQLite & SQLAlchemy
 *   **Base de Datos Vectorial:** Pinecone Serverless Spec (métrica `cosine`)
+*   **Modelo de Embeddings (IA):** OpenAI CLIP (`openai/clip-vit-base-patch32` vía Hugging Face Transformers)
+*   **Procesamiento de Imágenes:** Pillow (PIL) & NumPy
 *   **Suite de Pruebas:** Pytest + Pytest-asyncio
 
 ---
@@ -41,23 +46,36 @@ SourcingPlus-VisualSearch-Backend/
 ├── app/
 │   ├── api/
 │   │   ├── __init__.py
-│   │   └── endpoints.py       # Endpoints REST (salud, sincronización y búsqueda visual)
+│   │   └── endpoints.py       # Endpoints REST (ingesta, búsqueda, analíticas y logging)
 │   ├── services/
 │   │   ├── __init__.py
 │   │   ├── cache.py           # Sistema de Caché LRU de embeddings (Última generación)
-│   │   ├── ingestor.py        # Ingestor de imágenes y normalización (Subagent A-1)
-│   │   └── vectorizer.py      # Generador de embeddings e indexador Pinecone (Subagent A-2)
+│   │   ├── ingestor.py        # Ingestor de imágenes y normalización
+│   │   └── vectorizer.py      # CLIP Vectorizer (visión/texto) y Pinecone Client
+│   ├── static/                # Activos Frontend served directly on '/'
+│   │   ├── app.js             # Lógica e integración con la API
+│   │   ├── index.html         # Maquetación y estructura del Dashboard
+│   │   └── style.css          # Estilo corporativo "Consulting Light Theme"
 │   ├── __init__.py
 │   ├── config.py              # Carga de variables de entorno y configuración
-│   ├── main.py                # Entrada principal de la aplicación FastAPI
+│   ├── database.py            # Inicialización de motor de base de datos relacional ORM
+│   ├── main.py                # Entrada principal e inicializador de tablas
+│   ├── models.py              # Modelos de tablas SQLite (Product, SearchLog)
 │   └── schemas.py             # Modelos de validación Pydantic
+├── docs/
+│   ├── SOP.md                 # Procedimiento operativo estándar y guía de seguridad
+│   ├── implementation_plan.md # Plan de implementación del ciclo de vida
+│   ├── task.md                # Checklists de tareas completadas
+│   └── walkthrough.md         # Walkthrough y reportes de pruebas ejecutadas
 ├── tests/
-│   ├── test_api.py            # Pruebas integrales de endpoints REST
+│   ├── test_api.py            # Pruebas integrales de endpoints REST e index.html
+│   ├── test_database.py       # Pruebas de conectividad y consultas SQL
+│   ├── test_hybrid.py         # Pruebas para filtros de precio, marcas y mezcla CLIP
 │   ├── test_ingestor.py       # Pruebas de procesamiento y resizing de imágenes
-│   ├── test_vectorizer.py     # Pruebas de embeddings e indexación Pinecone
-│   └── test_search.py         # Pruebas para filtros avanzados, umbrales y caché
+│   ├── test_search.py         # Pruebas para filtros avanzados, stock y caché
+│   └── test_vectorizer.py     # Pruebas de embeddings e indexación Pinecone
 ├── .env.example               # Plantilla de variables de configuración
-├── .gitignore                 # Exclusiones de Git para claves y caché
+├── .gitignore                 # Exclusiones de Git (secrets, db, cachés)
 ├── requirements.txt           # Dependencias del proyecto
 └── README.md                  # Documentación del proyecto
 ```
@@ -66,11 +84,8 @@ SourcingPlus-VisualSearch-Backend/
 
 ## 🚀 Comenzando
 
-### 1. Requisitos Previos
-Asegúrate de tener instalado Python (versión 3.10 o superior) y Git en tu equipo.
-
-### 2. Clonación e Instalación
-Clona el repositorio en tu máquina local y accede al directorio:
+### 1. Clonación e Instalación
+Clona el repositorio y accede al directorio:
 ```bash
 git clone https://github.com/juankgarcia700/SourcingPlus-VisualSearch-Backend.git
 cd SourcingPlus-VisualSearch-Backend
@@ -88,68 +103,43 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 3. Configuración del Entorno
+### 2. Configuración del Entorno
 Copia el archivo de ejemplo `.env.example` y renómbralo a `.env`:
 ```bash
 copy .env.example .env
 ```
-Abre el archivo `.env` y configura tus credenciales reales si deseas conectarte a la base de datos real de Pinecone:
+Abre el archivo `.env` y configura tus credenciales:
 ```ini
 PINECONE_API_KEY=tu-clave-api-de-pinecone
 PINECONE_INDEX_NAME=sourcingplus-visual-search
-USE_MOCK_EMBEDDINGS=False   # Cambia a True para probar offline sin descargar modelos pesados ni usar claves
+DATABASE_URL=sqlite:///./sourcingplus.db
+USE_MOCK_EMBEDDINGS=True   # Cambia a False para descargar modelos CLIP locales reales
 ```
 
-### 4. Ejecución del Servidor
+### 3. Ejecución del Servidor
 Inicia el servidor local de desarrollo:
 ```bash
-uvicorn app.main:app --reload
+python -m uvicorn app.main:app --reload
 ```
-Accede a la documentación interactiva Swagger en:
-👉 **http://127.0.0.1:8000/docs**
+Abre en tu navegador la dirección del servidor:
+👉 **http://127.0.0.1:8000/** (Carga la aplicación web interactiva del Dashboard)
+👉 **http://127.0.0.1:8000/docs** (Carga la interfaz de Swagger)
 
 ---
 
-## 🔌 Especificación de la API (Endpoints Avanzados)
+## 🔌 Especificación de la API (Endpoints Principales)
 
-### A. Sincronización de Catálogo
-*   **Ruta:** `POST /api/v1/sync`
-*   **Descripción:** Descarga de forma concurrente, normaliza e indexa imágenes en Pinecone mapeando SKU, precio, categoría e inventario.
-
-### B. Búsqueda por Archivo (Snap & Shop)
-*   **Ruta:** `POST /api/v1/search/file`
-*   **Formato de entrada:** `multipart/form-data`
-*   **Parámetros:**
-    *   `file` (Archivo de imagen: PNG, JPEG)
-    *   `top_k` (Entero, opcional, por defecto 10): Número de coincidencias.
-    *   `score_threshold` (Flotante, opcional, por defecto 0.0): Retorna solo productos con similitud superior al valor (ej. `0.75`).
-    *   `in_stock_only` (Booleano, opcional, por defecto `false`): Si es `true`, filtra productos con inventario mayor a 0.
-    *   `category` (Cadena, opcional): Restringe la búsqueda a una categoría.
-
-### C. Búsqueda por URL (Screenshot / Social commerce)
-*   **Ruta:** `POST /api/v1/search/url`
-*   **Cuerpo (JSON):**
-    ```json
-    {
-      "image_url": "https://url-de-la-imagen.jpg",
-      "top_k": 5,
-      "score_threshold": 0.70,
-      "in_stock_only": true,
-      "category": "Calzado"
-    }
-    ```
+-   `POST /api/v1/sync`: Recibe listado de productos, procesa imágenes y sincroniza Pinecone y SQLite.
+-   `POST /api/v1/search/file`: Recibe una foto (Multipart/form-data) y realiza búsquedas de coincidencia visual.
+-   `POST /api/v1/search/url`: Recibe la URL de una foto (JSON body) y realiza búsquedas.
+-   `GET /api/v1/analytics/stats`: Devuelve estadísticas del Dashboard (latencias, aciertos de caché).
+-   `GET /api/v1/analytics/trending`: Devuelve la clasificación de los productos más buscados con éxito en la plataforma.
 
 ---
 
 ## 🧪 Ejecución de Pruebas
-
 El proyecto cuenta con una completa suite de pruebas automatizadas que se ejecutan localmente con:
 ```bash
 python -m pytest -v
 ```
-
----
-
-## 🛡️ Integración Continua (CI)
-
-Este proyecto está integrado con **GitHub Actions**. Cada vez que realices un `push` o crees un `Pull Request` hacia la rama `main`, GitHub ejecutará automáticamente la suite de pruebas para verificar que el código no contenga errores ni dependencias rotas antes de integrarse.
+Las 20 pruebas unitarias e integrales garantizan que cualquier cambio conserve la compatibilidad e integridad del código.

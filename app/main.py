@@ -1,6 +1,9 @@
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+import os
 
 from app.api.endpoints import router as api_router
 from app.config import settings
@@ -35,13 +38,12 @@ app.add_middleware(
 # Register API routes
 app.include_router(api_router, prefix="/api/v1", tags=["Catalog Sync"])
 
+# Mount static folder
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
 @app.get("/")
 def read_root():
-    return {
-        "message": "Welcome to SourcingPlus Visual Search API",
-        "version": "1.0.0",
-        "docs_url": "/docs"
-    }
+    return FileResponse(os.path.join("app", "static", "index.html"))
 
 if __name__ == "__main__":
     import uvicorn

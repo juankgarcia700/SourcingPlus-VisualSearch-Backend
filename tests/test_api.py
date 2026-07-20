@@ -22,7 +22,8 @@ def test_health_check():
 def test_root_route():
     response = client.get("/")
     assert response.status_code == 200
-    assert "version" in response.json()
+    assert "text/html" in response.headers["content-type"]
+    assert "SourcingPlus" in response.text
 
 def test_sync_catalog_empty():
     payload = {"products": []}

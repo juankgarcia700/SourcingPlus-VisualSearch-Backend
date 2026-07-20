@@ -1,99 +1,82 @@
-# Implementation Plan - Phase 7: Search Analytics & Dashboard Endpoints
+# Implementation Plan - Phase 8: Premium Visual Search Frontend & Admin UI (Corporate Light Theme)
 
-This plan outlines the architecture and execution steps for building Phase 7 of the **SourcingPlus Visual Search Backend**. It introduces a logging layer to record search telemetry and exposes endpoints to compute search insights and performance metrics (cache hit rate, search trends, average latency).
+This plan outlines the architecture and execution steps for building Phase 8 of the **SourcingPlus Visual Search Backend**. It focuses on creating a premium, responsive Single-Page Application (SPA) served directly from the FastAPI server, providing a complete interface for visual querying, catalog synchronization, and real-time dashboard analytics.
 
 ## Goal Description
-Build an analytics collection and reporting engine:
-1. **Search Telemetry Schema**: Add a `SearchLog` model to the relational database to record query type, cache status, execution latency, text query inputs, and top match profiles.
-2. **Background Logging Task**: Log search events asynchronously using FastAPI's `BackgroundTasks` to ensure telemetry capture has **zero impact** on search response latency.
-3. **Performance Metrics Dashboard Endpoint (`/analytics/stats`)**: Calculate total query counts, cache hit rate percentages, average search latency in milliseconds, and query type distributions.
-4. **Visual Search Trends Endpoint (`/analytics/trending`)**: Expose the top $K$ products most frequently returned as the #1 best match in visual searches.
+Build a premium visual search user interface:
+1. **FastAPI Static Serving**: Mount static files in the FastAPI app and redirect the root route (`GET /`) to serve the dashboard SPA.
+2. **Consulting Consulting/Corporate Light Theme**: Design a professional, clean, light-themed user interface utilizing deep corporate navy (`#0f172a`), sapphire blue (`#1e3a8a` / `#2563eb`), off-white backgrounds (`#f8fafc`), and clean border layouts with soft, professional card shadows.
+3. **Interactive Search Tab**:
+   - **Upload & Drag-and-Drop Area**: Support dragging images, pasting image URLs, or clicking to upload local image files.
+   - **Multi-query Controls**: Expose parameters for CLIP text blending (`text_query` and `image_weight` slider), price ranges (`min_price` and `max_price`), brand, category, and availability filters.
+   - **Hydrated Results Grid**: Show image matching results, similarity scores, pricing, brands, buying links, and cache hit metrics.
+4. **Real-time Analytics Tab**:
+   - **KPI Metric Cards**: Display total query volumes, cache hit rates, and average latency.
+   - **Visual Search Trends**: Display trending products with hits counters and full catalog metadata.
 
 ---
 
-## Technical Specifications
+## Technical Architecture
 
-### 1. Database Model - `SearchLog`
-```python
-class SearchLog(Base):
-    __tablename__ = "search_logs"
+```mermaid
+graph TD
+    FastAPI[FastAPI Router app/main.py] -->|Serves /| Static[app/static/index.html]
+    Static -->|Imports Styles| CSS[app/static/style.css]
+    Static -->|Handles Interaction| JS[app/static/app.js]
     
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    query_type = Column(String, nullable=False)        # "url" or "file"
-    query_value = Column(String, nullable=True)         # URL string or filename
-    text_query = Column(String, nullable=True)          # Associated text tag if any
-    took_ms = Column(Integer, nullable=False)           # Search execution latency
-    cache_hit = Column(Boolean, nullable=False)         # Cache hit telemetry
-    top_match_id = Column(String, nullable=True)        # ID of the top product match
-    top_match_score = Column(Float, nullable=True)      # Cosine similarity of top match
+    JS -->|AJAX POST /sync| Ingest[Catalog Ingestion API]
+    JS -->|AJAX POST /search/*| Search[Visual Search API]
+    JS -->|AJAX GET /analytics/*| Analytics[Analytics API]
 ```
-
-### 2. Async Background Task Integration
-To record logs without blocking HTTP responses:
-```python
-def record_search_log(
-    db: Session,
-    query_type: str,
-    query_value: Optional[str],
-    text_query: Optional[str],
-    took_ms: int,
-    cache_hit: bool,
-    results: list
-):
-    # Extracts top match ID and score from result list and logs entry to SQLite database
-    ...
-```
-In search endpoints, we will inject `background_tasks: BackgroundTasks` and call:
-`background_tasks.add_task(record_search_log, ...)`
 
 ---
 
 ## User Review Required
 
 > [!IMPORTANT]
-> **Performance Guarantee**
-> Logging to SQLite involves disk I/O, which could add 10-15ms to requests. By executing the logging operation using FastAPI `BackgroundTasks`, we defer disk writes until *after* the HTTP response has been sent to the user. This guarantees that search latency remains unaffected.
+> **Single Server Solution**
+> Serving the frontend directly from FastAPI avoids introducing CORS configurations or requiring you to manage multiple development servers. Running `python -m uvicorn app.main:app --reload` will spin up the API and the web dashboard simultaneously on port 8000.
 
----
-
-## Open Questions
-
-> [!WARNING]
-> 1. **Data Retention**: For this stage, logs are stored permanently in the local SQLite database. In high-volume production systems, a retention limit or log-rotation script is recommended. For now, we will persist all logs.
+> [!TIP]
+> **Corporate Light Aesthetics**
+> The interface will use the clean **Inter** Google Font, avoiding dark neon styles. It will employ corporate colors (slate gray, navy titles, sapphire accents, and crisp white cards) for a highly polished, consulting-firm presentation.
 
 ---
 
 ## Proposed Changes
 
-### Component: Database Models
+### Component: Server Configuration
 
-#### [MODIFY] [app/models.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/models.py)
-*   Add `SearchLog` SQLAlchemy table definition.
-
----
-
-### Component: Schemas
-
-#### [MODIFY] [app/schemas.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/schemas.py)
-*   Create Pydantic response models for `/analytics/stats` (including hit rates, average times) and `/analytics/trending`.
+#### [MODIFY] [app/main.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/main.py)
+*   Mount static files directory: `app.mount("/static", StaticFiles(directory="app/static"), name="static")`.
+*   Redirect the root endpoint `/` to return `app/static/index.html` via `FileResponse`.
 
 ---
 
-### Component: API Endpoints
+### Component: Frontend UI Assets
 
-#### [MODIFY] [app/api/endpoints.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/api/endpoints.py)
-*   Implement `record_search_log` database operations.
-*   Update search endpoints to accept `BackgroundTasks` and queue search log entries.
-*   Implement `GET /analytics/stats` endpoint.
-*   Implement `GET /analytics/trending` endpoint.
+#### [NEW] [app/static/index.html](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/static/index.html)
+Structure for search panels, filters sidebars, results cards, and the dashboard metrics grid.
+
+#### [NEW] [app/static/style.css](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/static/style.css)
+Visual assets, corporate styling tokens, button hover animations, grid layouts, and dashboard SVG styles.
+
+#### [NEW] [app/static/app.js](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/app/static/app.js)
+API integrations, drag-and-drop controllers, file reading, state handling, and rendering engines.
 
 ---
 
-### Verification and Testing
+## Verification Plan
 
-#### [NEW] [tests/test_analytics.py](file:///c:/Users/GarciaJ26/OneDrive - AkzoNobel/Mundial - Documents/DASHBOARDS & KPI´s/SourcingPlus-VisualSearch-Backend/tests/test_analytics.py)
-Create integration tests verifying:
-- Search logs are successfully written on query requests.
-- Analytics statistics calculations (total searches, cache hits, latency averages) match the logged records.
-- Trending query returns products in sorted order of search hits.
+### Automated Build Checks
+Validate that the FastAPI server initiates correctly with static file mounts:
+```bash
+python -m pytest -v
+```
+All existing 20 backend tests should pass.
+
+### Manual Verification
+1. Start the server: `python -m uvicorn app.main:app --reload`.
+2. Open the forwarded port 8000 in your browser.
+3. Verify that the visual app interface loads in light theme.
+4. Sync a mock catalog, run a search by dragging a file, and verify that the Admin Dashboard compiles stats correctly.
